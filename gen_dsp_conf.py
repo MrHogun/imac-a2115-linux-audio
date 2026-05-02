@@ -27,6 +27,13 @@ sufficient for accurate reproduction matching the speaker design intent.
 XOVER_HZ = 800.0
 XOVER_Q  = 0.70   # Butterworth 2nd-order (two cascaded = 4th-order Linkwitz-Riley)
 
+# Tweeter software HPF:
+#   800  = same as woofer LPF (crossover pair) — use if driver does NOT init HW EQ
+#   None = no software HPF (use if HW EQ1S1R7/EQ1S2R7 are programmed, or for testing)
+#   200  = subsonic-only protection (compromise test)
+# No software HPF on tweeter — matches Windows APO (HW CS42L83 does DC blocking only)
+TWEETER_HPF_HZ = None
+
 WOOFER_PEQ = [
     {"f0": 1320.0, "Q": 0.62, "gain": 17.22},
     {"f0":  210.0, "Q": 0.84, "gain": -14.42},
@@ -42,6 +49,9 @@ TWEETER_PEQ = [
     {"f0": 1180.0, "Q": 0.14, "gain":  -6.62},
     {"f0": 1637.0, "Q": 0.27, "gain":   5.16},
     {"f0": 4883.0, "Q": 0.32, "gain":   3.41},
+    # CS42L83 HW EQ (EQ1S1R7+EQ1S2R7) compensation: driver doesn't program these regs,
+    # they would add ~+8dB shelf above ~9kHz. Approximate with high-shelf.
+    {"type": "highshelf", "f0": 9000.0, "Q": 0.7, "gain": 7.9},
 ]
 
 # Pre-gain: largest single PEQ boost in tweeter path is +11.48 dB.
@@ -103,29 +113,35 @@ for i, p in enumerate(WOOFER_PEQ):
     wR.append(n)
 chain(wR)
 
-# --- Tweeter Left: 2x HPF + 6 PEQ ---
-# PipeWire fan-out: connect pgL:Out to both wL chain (already done) and tL chain
+# --- Tweeter Left: [optional HPF] + 6 PEQ ---
+# Windows APO has NO software HPF for tweeter (hardware CS42L83 EQ1S1R7/EQ1S2R7 does it).
+# Linux driver does NOT program those hardware regs, so we add software HPF.
+# Set TWEETER_HPF_HZ = None to test without HPF (matches Windows APO exactly).
 tL = []
-for i in range(2):
-    n = f"tL_hp{i+1}"
-    node(n, "bq_highpass", Freq=XOVER_HZ, Q=XOVER_Q)
-    tL.append(n)
+if TWEETER_HPF_HZ:
+    for i in range(2):
+        n = f"tL_hp{i+1}"
+        node(n, "bq_highpass", Freq=float(TWEETER_HPF_HZ), Q=XOVER_Q)
+        tL.append(n)
 for i, p in enumerate(TWEETER_PEQ):
     n = f"tL_eq{i+1}"
-    node(n, "bq_peaking", Freq=p["f0"], Q=p["Q"], Gain=p["gain"])
+    label = "bq_highshelf" if p.get("type") == "highshelf" else "bq_peaking"
+    node(n, label, Freq=p["f0"], Q=p["Q"], Gain=p["gain"])
     tL.append(n)
-link("pgL", tL[0])   # fan-out from pre-gain node
+link("pgL", tL[0])
 chain(tL)
 
 # --- Tweeter Right: same ---
 tR = []
-for i in range(2):
-    n = f"tR_hp{i+1}"
-    node(n, "bq_highpass", Freq=XOVER_HZ, Q=XOVER_Q)
-    tR.append(n)
+if TWEETER_HPF_HZ:
+    for i in range(2):
+        n = f"tR_hp{i+1}"
+        node(n, "bq_highpass", Freq=float(TWEETER_HPF_HZ), Q=XOVER_Q)
+        tR.append(n)
 for i, p in enumerate(TWEETER_PEQ):
     n = f"tR_eq{i+1}"
-    node(n, "bq_peaking", Freq=p["f0"], Q=p["Q"], Gain=p["gain"])
+    label = "bq_highshelf" if p.get("type") == "highshelf" else "bq_peaking"
+    node(n, label, Freq=p["f0"], Q=p["Q"], Gain=p["gain"])
     tR.append(n)
 link("pgR", tR[0])
 chain(tR)

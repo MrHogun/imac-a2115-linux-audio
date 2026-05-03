@@ -7,6 +7,20 @@ Covers kernel driver installation + 4-speaker PipeWire DSP with hardware-accurat
 
 ---
 
+## Disclaimer
+
+**This project comes with no guarantees of correctness, safety, or sound quality on hardware other than the specific machine it was tested on.**
+
+- The author has no formal background in low-level audio engineering, DSP, or kernel driver development. This project was built by reading existing work, extracting Apple's and Cirrus Logic's own calibration data, and applying it with help from [Claude Code](https://claude.ai/code) (model: `claude-sonnet-4-6`).
+- All EQ parameters are derived directly from **Apple's macOS speaker tuning files** (AID20 `PressureResponse` FIR) and **Cirrus Logic's official BootCamp Windows driver** (`cs4208_38.inf`). No values were invented or guessed — they reflect Apple's and Cirrus's own factory measurements for this specific hardware.
+- Sound quality was **subjectively evaluated** by the author on one iMac A2115 2019. There is no claim of objective accuracy or 100% parity with macOS. What you hear may differ depending on your room, your ears, and your unit's hardware tolerances.
+- This has only been tested on **iMac 27" A2115 (2019)**. It will likely not work correctly on other iMac models, and definitely not on unrelated hardware.
+- The kernel driver dependency ([davidjo/snd_hda_macbookpro](https://github.com/davidjo/snd_hda_macbookpro)) is an out-of-tree module — it may break with kernel updates.
+
+If you are an audio engineer or DSP developer and spot something wrong, pull requests are very welcome.
+
+---
+
 ## The problem
 
 By default, Linux does not produce any sound on this iMac.  

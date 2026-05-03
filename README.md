@@ -321,6 +321,15 @@ The Dolby DAX3 XML from BootCamp contains a 20-band EQ, but it is one stage of a
 
 ---
 
+## Acknowledgements
+
+- [davidjo/snd_hda_macbookpro](https://github.com/davidjo/snd_hda_macbookpro) — kernel driver for CS8409/CS42L83 on Apple hardware (GPL-2.0)
+- Apple Inc. — AID20 speaker tuning data extracted from macOS
+- Cirrus Logic — CONF_0911 EQ parameters from official BootCamp Windows driver (`cs4208_38.inf`)
+- [vshymanskyy/StandWithUkraine](https://github.com/vshymanskyy/StandWithUkraine) — Stand With Ukraine badge
+
+---
+
 ## Version history
 
 | Version | Change |

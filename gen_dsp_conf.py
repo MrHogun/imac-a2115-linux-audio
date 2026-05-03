@@ -5,18 +5,23 @@ Signal chain:
   Input stereo (L, R)
   -> Pre-gain -6 dB (headroom for PEQ boosts)
   -> Fan-out: woofer path + tweeter path (PipeWire handles fan-out natively)
-     Woofer  L/R: 2x LPF @800 Hz (4th-order) -> CONF_0911 ch0 PEQ (6 bands)
-     Tweeter L/R: 2x HPF @800 Hz (4th-order) -> CONF_0911 ch1 PEQ (6 bands)
+     Woofer  L/R: 2x LPF @800 Hz (4th-order)
+               -> bass shelf +7 dB @150 Hz (Apple 'flow' AU bass extension approx.)
+               -> CONF_0911 ch0 PEQ (6 bands, resonance correction 200-2500 Hz)
+     Tweeter L/R: CONF_0911 ch1 PEQ (7 bands incl. CS42L83 HW EQ compensation)
   -> Output 4ch surround-40
        FL = tweeter_L,  FR = tweeter_R,  RL = woofer_L,  RR = woofer_R
 
 CONF_0911 from cs4208_38.inf, subsystem HDAUDIO VEN_1013&DEV_8409&SUBSYS_106B1000
-(Cirrus CS8409+CS42L83, iMac A2115 2019).
+(Cirrus CS8409+CS42L83, iMac A2115 2019).  AID20 = iMac A2115 in Apple's tuning DB.
+
+Bass shelf derivation: Apple 'aufx-flow' AU reads PressureResponse (Wold decomp.)
+from AID20 tuning file. First coefficient = 0.447 implies ~+7 dB bass correction
+at DC relative to midrange. Approximated as bq_lowshelf at 150 Hz.
 
 Dolby DAX3 EQ is intentionally omitted: it is one part of a multi-stage
 perceptual pipeline (DRC, dynamics, virtualiser); applying the 20-band section
-alone produces wrong tonal balance. Basic CONF_0911 hardware correction is
-sufficient for accurate reproduction matching the speaker design intent.
+alone produces wrong tonal balance. CONF_0911 + bass shelf is the correct approach.
 """
 
 # ---------------------------------------------------------------------------
@@ -35,6 +40,10 @@ XOVER_Q  = 0.70   # Butterworth 2nd-order (two cascaded = 4th-order Linkwitz-Ril
 TWEETER_HPF_HZ = None
 
 WOOFER_PEQ = [
+    # Bass extension: approx. Apple 'aufx-flow' correction below 200 Hz.
+    # AID20 PressureResponse[0]=0.447 → ~+7 dB shelf relative to midrange.
+    {"type": "lowshelf", "f0": 150.0, "Q": 0.7, "gain": 7.0},
+    # CONF_0911 ch0 resonance corrections 200-2500 Hz:
     {"f0": 1320.0, "Q": 0.62, "gain": 17.22},
     {"f0":  210.0, "Q": 0.84, "gain": -14.42},
     {"f0": 1663.0, "Q": 0.23, "gain": 10.52},
@@ -51,7 +60,7 @@ TWEETER_PEQ = [
     {"f0": 4883.0, "Q": 0.32, "gain":   3.41},
     # CS42L83 HW EQ (EQ1S1R7+EQ1S2R7) compensation: driver doesn't program these regs,
     # they would add ~+8dB shelf above ~9kHz. Approximate with high-shelf.
-    {"type": "highshelf", "f0": 9000.0, "Q": 0.7, "gain": 7.9},
+    {"type": "highshelf", "f0": 9000.0, "Q": 0.7, "gain": 4.0},
 ]
 
 # Pre-gain: largest single PEQ boost in tweeter path is +11.48 dB.
@@ -89,7 +98,7 @@ def chain(node_list):
 node("pgL", "bq_highshelf", Freq=30.0, Q=0.7, Gain=PRE_GAIN_DB)
 node("pgR", "bq_highshelf", Freq=30.0, Q=0.7, Gain=PRE_GAIN_DB)
 
-# --- Woofer Left: 2x LPF + 6 PEQ ---
+# --- Woofer Left: 2x LPF + bass shelf + 6 PEQ ---
 wL = ["pgL"]
 for i in range(2):
     n = f"wL_lp{i+1}"
@@ -97,7 +106,9 @@ for i in range(2):
     wL.append(n)
 for i, p in enumerate(WOOFER_PEQ):
     n = f"wL_eq{i+1}"
-    node(n, "bq_peaking", Freq=p["f0"], Q=p["Q"], Gain=p["gain"])
+    t = p.get("type", "peaking")
+    label = "bq_lowshelf" if t == "lowshelf" else "bq_peaking"
+    node(n, label, Freq=p["f0"], Q=p["Q"], Gain=p["gain"])
     wL.append(n)
 chain(wL)
 
@@ -109,7 +120,9 @@ for i in range(2):
     wR.append(n)
 for i, p in enumerate(WOOFER_PEQ):
     n = f"wR_eq{i+1}"
-    node(n, "bq_peaking", Freq=p["f0"], Q=p["Q"], Gain=p["gain"])
+    t = p.get("type", "peaking")
+    label = "bq_lowshelf" if t == "lowshelf" else "bq_peaking"
+    node(n, label, Freq=p["f0"], Q=p["Q"], Gain=p["gain"])
     wR.append(n)
 chain(wR)
 

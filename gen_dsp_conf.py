@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Generate PipeWire filter-chain config for iMac A2115 2019 4-speaker DSP.
 
-Signal chain:
+Signal chain (v1.4):
   Input stereo (L, R)
-  -> Pre-gain -12 dB (headroom; woofer flow path peaks at +11.4 dB)
-  -> Fan-out: woofer path + tweeter path (PipeWire handles fan-out natively)
-     Woofer  L/R: 2x LPF @800 Hz (4th-order Linkwitz-Riley)
-               -> AID20 'flow' PEQ (5 peaking + 1 lowshelf, fit to PR0 inverse)
-     Tweeter L/R: CONF_0911 ch1 PEQ (7 bands incl. CS42L83 HW EQ compensation)
-  -> Output 4ch surround-40
-       FL = tweeter_L,  FR = tweeter_R,  RL = woofer_L,  RR = woofer_R
+  -> Pre-gain -15 dB [pgL/pgR]
+  -> Woofer L/R:  LPF×2 @800 Hz → AID20 flow PEQ → CONF_0911 ch0 woofer EQ → RL/RR
+  -> Tweeter L/R: +11.885 dB TweeterGain comp [tgL/tgR]
+                  → CONF_0911 ch1 tweeter PEQ (7 bands)
+                  → FL/FR
+
+TweeterGain = +11.885 dB from AID20: tweeter HW amp is 11.885 dB louder on real iMac.
+Linux uses equal HW amp for all 4 channels → must compensate +11.885 dB in software.
+CONF_0911 woofer ch0 bands: from cs4208_38.inf (same driver), now applied to woofer path.
 
 CONF_0911 from cs4208_38.inf, subsystem HDAUDIO VEN_1013&DEV_8409&SUBSYS_106B1000
 (Cirrus CS8409+CS42L83, iMac A2115 2019).  AID20 = iMac A2115 in Apple's tuning DB.
@@ -34,32 +36,32 @@ XOVER_Q  = 0.70   # Butterworth 2nd-order (two cascaded = 4th-order Linkwitz-Ril
 
 TWEETER_HPF_HZ = None   # no software HPF; HW CS42L83 provides DC blocking
 
-WOOFER_PEQ = [
+WOOFER_FLOW_PEQ = [
     # AID20 'flow' correction: biquad fit to inverse of PressureResponse[ch0].
-    # Target: DTFT of 1024-tap FIR, inverted, normalized to 0 dB at 1 kHz.
-    # Fit within ±2 dB at 200-800 Hz (woofer operating range with LPF at 800 Hz).
-    {"f0":  500.0, "Q": 1.50, "gain": +12.0},   # main peak (+14 dB target at 500 Hz)
-    {"f0":  720.0, "Q": 2.50, "gain":  +5.0},   # 700-800 Hz shoulder
-    {"f0": 1050.0, "Q": 2.50, "gain":  -8.0},   # valley at 1 kHz
-    {"f0": 1900.0, "Q": 1.00, "gain":  +9.0},   # 2 kHz bump
-    {"f0": 2800.0, "Q": 0.50, "gain":  -5.0},   # 2.5-3 kHz cut
+    {"f0":  500.0, "Q": 1.50, "gain": +12.0},
+    {"f0":  720.0, "Q": 2.50, "gain":  +5.0},
+    {"f0": 1050.0, "Q": 2.50, "gain":  -8.0},
+    {"f0": 1900.0, "Q": 1.00, "gain":  +9.0},
+    {"f0": 2800.0, "Q": 0.50, "gain":  -5.0},
     {"type": "lowshelf", "f0": 150.0, "Q": 0.70, "gain": +2.0},
 ]
+WOOFER_HW_PEQ = []  # CONF_0911 woofer bands excluded: PressureResponse was measured WITH
+                    # CS42L83 EQ active, so flow PEQ already accounts for it.
 TWEETER_PEQ = [
+    # CONF_0911 ch1 tweeter bands (CS42L83 HW EQ, not programmed on Linux)
     {"f0": 1031.0, "Q": 0.36, "gain": -17.67},
     {"f0": 1890.0, "Q": 0.29, "gain":  11.48},
     {"f0": 3440.0, "Q": 0.54, "gain":  -7.81},
     {"f0": 1180.0, "Q": 0.14, "gain":  -6.62},
     {"f0": 1637.0, "Q": 0.27, "gain":   5.16},
     {"f0": 4883.0, "Q": 0.32, "gain":   3.41},
-    # CS42L83 HW EQ (EQ1S1R7+EQ1S2R7) compensation: driver doesn't program these regs,
-    # they would add ~+8dB shelf above ~9kHz. Approximate with high-shelf.
     {"type": "highshelf", "f0": 9000.0, "Q": 0.7, "gain": 4.0},
 ]
 
-# Pre-gain: woofer flow path peaks at +11.4 dB at 501 Hz.
-# -12 dB ensures 0-dBFS input cannot clip after maximum PEQ boost.
-PRE_GAIN_DB = -12.0
+# TweeterGain = 11.885 dB from AID20: tweeter HW amp 11.885 dB louder than woofer.
+# Pre-gain -15 dB: woofer flow peaks at +12 dB → -15+12 = -3 dBFS headroom.
+PRE_GAIN_DB    = -15.0
+TWEETER_GAIN_DB = +11.885
 
 # ---------------------------------------------------------------------------
 # Build node / link lists
@@ -92,17 +94,21 @@ def chain(node_list):
 node("pgL", "bq_highshelf", Freq=30.0, Q=0.7, Gain=PRE_GAIN_DB)
 node("pgR", "bq_highshelf", Freq=30.0, Q=0.7, Gain=PRE_GAIN_DB)
 
-# --- Woofer Left: 2x LPF + flow PEQ ---
+# --- Woofer Left: LPF×2 → flow PEQ → CONF_0911 woofer HW EQ ---
 wL = ["pgL"]
 for i in range(2):
     n = f"wL_lp{i+1}"
     node(n, "bq_lowpass", Freq=XOVER_HZ, Q=XOVER_Q)
     wL.append(n)
-for i, p in enumerate(WOOFER_PEQ):
+for i, p in enumerate(WOOFER_FLOW_PEQ):
     n = f"wL_eq{i+1}"
     t = p.get("type", "peaking")
     label = "bq_lowshelf" if t == "lowshelf" else "bq_peaking"
     node(n, label, Freq=p["f0"], Q=p["Q"], Gain=p["gain"])
+    wL.append(n)
+for i, p in enumerate(WOOFER_HW_PEQ):
+    n = f"wL_hw{i+1}"
+    node(n, "bq_peaking", Freq=p["f0"], Q=p["Q"], Gain=p["gain"])
     wL.append(n)
 chain(wL)
 
@@ -112,25 +118,22 @@ for i in range(2):
     n = f"wR_lp{i+1}"
     node(n, "bq_lowpass", Freq=XOVER_HZ, Q=XOVER_Q)
     wR.append(n)
-for i, p in enumerate(WOOFER_PEQ):
+for i, p in enumerate(WOOFER_FLOW_PEQ):
     n = f"wR_eq{i+1}"
     t = p.get("type", "peaking")
     label = "bq_lowshelf" if t == "lowshelf" else "bq_peaking"
     node(n, label, Freq=p["f0"], Q=p["Q"], Gain=p["gain"])
     wR.append(n)
+for i, p in enumerate(WOOFER_HW_PEQ):
+    n = f"wR_hw{i+1}"
+    node(n, "bq_peaking", Freq=p["f0"], Q=p["Q"], Gain=p["gain"])
+    wR.append(n)
 chain(wR)
 
-# --- Tweeter Left: +6 dB compensation + [optional HPF] + PEQ ---
-# Pre-gain is -12 dB (needed for woofer's +11.4 dB flow boost).
-# Tweeter path needs only -6 dB headroom, so compensate +6 dB here.
-node("tgL", "bq_highshelf", Freq=30.0, Q=0.7, Gain=6.0)
+# --- Tweeter Left: TweeterGain +11.885 dB → CONF_0911 tweeter PEQ ---
+node("tgL", "bq_highshelf", Freq=30.0, Q=0.7, Gain=TWEETER_GAIN_DB)
 link("pgL", "tgL")
 tL = ["tgL"]
-if TWEETER_HPF_HZ:
-    for i in range(2):
-        n = f"tL_hp{i+1}"
-        node(n, "bq_highpass", Freq=float(TWEETER_HPF_HZ), Q=XOVER_Q)
-        tL.append(n)
 for i, p in enumerate(TWEETER_PEQ):
     n = f"tL_eq{i+1}"
     label = "bq_highshelf" if p.get("type") == "highshelf" else "bq_peaking"
@@ -139,14 +142,9 @@ for i, p in enumerate(TWEETER_PEQ):
 chain(tL)
 
 # --- Tweeter Right: same ---
-node("tgR", "bq_highshelf", Freq=30.0, Q=0.7, Gain=6.0)
+node("tgR", "bq_highshelf", Freq=30.0, Q=0.7, Gain=TWEETER_GAIN_DB)
 link("pgR", "tgR")
 tR = ["tgR"]
-if TWEETER_HPF_HZ:
-    for i in range(2):
-        n = f"tR_hp{i+1}"
-        node(n, "bq_highpass", Freq=float(TWEETER_HPF_HZ), Q=XOVER_Q)
-        tR.append(n)
 for i, p in enumerate(TWEETER_PEQ):
     n = f"tR_eq{i+1}"
     label = "bq_highshelf" if p.get("type") == "highshelf" else "bq_peaking"

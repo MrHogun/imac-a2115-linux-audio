@@ -1,5 +1,7 @@
 # iMac A2115 2019 — Linux Audio Setup
 
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](#support-ukraine)
+
 Full audio setup for the **iMac 27" A2115 (2019)** running Linux.  
 Covers kernel driver installation + 4-speaker PipeWire DSP with hardware-accurate crossover and EQ derived from Apple's own speaker tuning data.
 
@@ -327,3 +329,17 @@ The Dolby DAX3 XML from BootCamp contains a 20-band EQ, but it is one stage of a
 | v1.1 | Tweeter: CONF_0911 ch1 PEQ + CS42L83 HW EQ compensation shelf |
 | v1.2 | Woofer: CONF_0911 ch0 + rough +7 dB bass shelf from AID20 PR[0] coefficient |
 | v1.3 | Woofer: full biquad fit to AID20 PressureResponse DTFT inverse (Apple flow correction); tweeter gain compensation node added |
+
+---
+
+## 🇺🇦 Support Ukraine
+
+If this project was useful to you, consider donating to one of these international humanitarian organizations operating in Ukraine. All listed organizations have a 4/4 rating on Charity Navigator.
+
+| Organization | Focus | Link |
+|---|---|---|
+| **Médecins Sans Frontières (MSF)** | Medical care in conflict zones | [msf.org/ukraine](https://www.msf.org/ukraine) |
+| **International Rescue Committee (IRC)** | Emergency relief, shelter, healthcare | [rescue.org/ukraine](https://www.rescue.org/ukraine) |
+| **UNHCR** (UN Refugee Agency) | Refugees and displaced people | [donate.unhcr.org/ukraine](https://donate.unhcr.org/int/en/ukraine) |
+| **Save the Children** | Children affected by conflict | [savethechildren.org](https://www.savethechildren.org/us/where-we-work/europe/ukraine) |
+

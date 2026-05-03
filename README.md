@@ -1,7 +1,7 @@
 # iMac A2115 2019 — Linux Audio Setup
 
 Full audio setup for the **iMac 27" A2115 (2019)** running Linux.  
-Covers kernel driver installation + 4-speaker PipeWire DSP with hardware-accurate crossover and EQ.
+Covers kernel driver installation + 4-speaker PipeWire DSP with hardware-accurate crossover and EQ derived from Apple's own speaker tuning data.
 
 > Tested on Pop!_OS 22.04. Should work on any Ubuntu 22.04+ or Debian-based distro with systemd + PipeWire.
 
@@ -26,18 +26,18 @@ This repo solves both problems.
 2. **Configures a PipeWire filter-chain DSP** that:
    - Activates the `analog-surround-40` ALSA profile (exposes all 4 speakers)
    - Applies a 4th-order Linkwitz-Riley crossover at 800 Hz
-   - Applies per-speaker parametric EQ correction (`CONF_0911` from the official Cirrus BootCamp Windows driver `cs4208_38.inf`, subsystem `106B1000` = iMac A2115)
+   - Applies per-speaker parametric EQ: woofer path from Apple's AID20 acoustic tuning data; tweeter path from Cirrus BootCamp driver (`CONF_0911`)
    - Creates a virtual stereo sink `imac_dsp_in` — apps see normal stereo, DSP handles the rest
 
 3. **Sets up a systemd user service** that applies settings automatically on every boot.
 
-### Signal chain
+### Signal chain (v1.3)
 
 ```
 App (stereo) → imac_dsp_in (virtual sink)
-  → Pre-gain  -6 dB  (headroom for PEQ boosts)
-  → Fan-out ──┬── Woofer L/R:  LPF 800 Hz (4th-order) → 6-band PEQ → RL/RR
-              └── Tweeter L/R: HPF 800 Hz (4th-order) → 6-band PEQ → FL/FR
+  → Pre-gain  -12 dB  (headroom for woofer +11.4 dB flow boost)
+  → Fan-out ──┬── Woofer L/R:  LPF 800 Hz (4th-order LR) → flow PEQ (6 bands) → RL/RR
+              └── Tweeter L/R: +6 dB gain → CONF_0911 PEQ (7 bands) → FL/FR
   → alsa_output ... analog-surround-40 (4-channel hardware output)
 ```
 
@@ -54,7 +54,7 @@ Channel mapping on `analog-surround-40`:
 ## Quick install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/imac-a2115-linux-audio
+git clone https://github.com/MrHogun/imac-a2115-linux-audio
 cd imac-a2115-linux-audio
 ./install.sh
 ```
@@ -125,6 +125,7 @@ pactl set-card-profile alsa_card.pci-0000_00_1f.3 output:analog-surround-40+inpu
 systemctl --user restart pipewire wireplumber pipewire-pulse
 sleep 3
 pactl set-default-sink imac_dsp_in
+pactl set-sink-volume imac_dsp_in 65536
 ```
 
 ---
@@ -143,9 +144,6 @@ pactl info | grep "Default Sink"
 # Check card profile
 pactl list cards | grep -A 20 alsa_card.pci-0000_00_1f.3 | grep "Active Profile"
 # Should show: output:analog-surround-40+input:analog-stereo
-
-# Play test audio
-paplay /usr/share/sounds/freedesktop/stereo/audio-channel-front-left.oga
 ```
 
 ---
@@ -165,6 +163,10 @@ paplay /usr/share/sounds/freedesktop/stereo/audio-channel-front-left.oga
 **Sound plays but only from 2 speakers:**
 - Check the active profile: `pactl list cards | grep -A 20 alsa_card.pci-0000_00_1f.3`
 - If it shows `output:analog-stereo` instead of `surround-40`, force it with pactl (see above)
+
+**Volume seems very quiet after restart:**
+- The pre-gain is -12 dB; always set volume to 100% after PipeWire restart:
+  `pactl set-sink-volume imac_dsp_in 65536`
 
 **Service not starting on boot:**
 - Check: `systemctl --user status imac-audio.service`
@@ -198,7 +200,8 @@ If you want to modify EQ values or the crossover frequency:
 python3 gen_dsp_conf.py
 # Outputs to ~/.config/pipewire/pipewire.conf.d/99-imac-dsp.conf
 
-systemctl --user restart pipewire wireplumber pipewire-pulse
+systemctl --user restart pipewire pipewire-pulse
+pactl set-sink-volume imac_dsp_in 65536
 ```
 
 ---
@@ -209,14 +212,104 @@ systemctl --user restart pipewire wireplumber pipewire-pulse
 
 The upstream `snd_hda_intel` + `snd_hda_codec_cs8409` module in the mainline kernel does not properly configure the CS8409 HDA bridge for the iMac A2115. The [davidjo/snd_hda_macbookpro](https://github.com/davidjo/snd_hda_macbookpro) out-of-tree driver includes the correct firmware and patch tables for Apple hardware including the iMac A2115 (subsystem ID `0x106B1000`).
 
-### Where do the EQ values come from?
+---
 
-The PEQ values (`CONF_0911`) come from `cs4208_38.inf` — the official Cirrus Logic Windows driver shipped with Apple BootCamp. This INF file contains factory-measured per-speaker biquad correction filters for the exact speakers used in this iMac. The subsystem ID `HDAUDIO VEN_1013&DEV_8409&SUBSYS_106B1000` uniquely identifies the iMac A2115 2019.
+### Woofer EQ: derived from Apple AID20 acoustic tuning data (v1.3)
+
+**AID20** is Apple's internal Acoustic ID for the iMac A2115. Apple ships speaker tuning data at:
+```
+/System/Library/Audio/Tunings/AID20/DSP/Strips/aid20-aufx-flow-appl.plist
+```
+
+This plist is processed by Apple's proprietary `aufx-flow` AudioUnit, which applies an acoustic correction to each speaker. The key field is `ChannelData[n].PressureResponse` — a **1024-tap FIR filter at 48 kHz** representing the measured in-situ acoustic impulse response of each speaker.
+
+**How the correction is derived:**
+
+The `flow` AU computes the minimum-phase inverse of the `PressureResponse` FIR and applies it as a correction filter. Applying the inverse of the measured acoustic response makes each speaker's output flat (equal contribution at every frequency in its operating range).
+
+To approximate this in PipeWire (which uses biquad filters, not FIR), we:
+
+1. Compute the DTFT of the 1024-tap `PressureResponse` FIR to get the measured woofer frequency response
+2. Invert it (negate the dB values, normalize to 0 dB at 1 kHz) to get the target correction curve
+3. Fit a set of biquad peaking filters to approximate that curve in the 150–800 Hz range (the woofer's operating range below the 800 Hz LPF crossover)
+
+**Target correction curve** (inverse of PR0, normalized to 0 dB @ 1 kHz):
+
+| Frequency | Apple target | Our biquad fit |
+|-----------|-------------|----------------|
+| 200 Hz    | +1.7 dB     | +1.8 dB        |
+| 300 Hz    | +4.4 dB     | +3.9 dB        |
+| 400 Hz    | +8.3 dB     | +8.3 dB        |
+| 500 Hz    | +14.0 dB    | +12.8 dB       |
+| 600 Hz    | +12.8 dB    | +10.9 dB       |
+| 700 Hz    | +9.0 dB     | +9.6 dB        |
+| 800 Hz    | +6.8 dB     | +5.7 dB        |
+
+The fit is within ±2 dB across 300–700 Hz. The 500–600 Hz region is slightly under-corrected (~1.5 dB) to avoid excessive cone excursion.
+
+**Woofer biquad parameters (v1.3):**
+
+| f0 (Hz) | Q    | Gain (dB) | Purpose                    |
+|---------|------|-----------|----------------------------|
+| 500     | 1.50 | +12.0     | Main flow correction peak  |
+| 720     | 2.50 | +5.0      | 700–800 Hz shoulder        |
+| 1050    | 2.50 | −8.0      | Valley at 1 kHz (ref point)|
+| 1900    | 1.00 | +9.0      | 2 kHz bump                 |
+| 2800    | 0.50 | −5.0      | 2.5–3 kHz cut              |
+| 150     | 0.70 | +2.0      | Low shelf (gentle)         |
+
+The `PressureResponse` ThieleSmall parameters from the same plist: `Bl=0.823 N/A`, `Kms=7902 N/m`, `Mms=0.748 g` → free-air resonance **f₀ ≈ 517 Hz**. This explains why the +14 dB correction peaks near 500 Hz — the woofer's acoustic output in the iMac enclosure dips sharply near its resonance frequency.
+
+**Why CONF_0911 ch0 was removed (v1.3):**
+
+`CONF_0911` comes from the Windows BootCamp APO (Audio Processing Object) in `cs4208_38.inf`. It was derived from the same woofer measurements but through a different pipeline and normalisation. Stacking both CONF_0911 and the flow correction would double-correct the same resonances. Since the flow data is directly from Apple's macOS tuning files, it takes priority.
+
+---
+
+### Tweeter EQ: CONF_0911 from Cirrus BootCamp driver
+
+Source: `cs4208_38.inf`, subsystem `HDAUDIO VEN_1013&DEV_8409&SUBSYS_106B1000` (iMac A2115).
+
+These are factory-measured biquad filters for the CS42L83 tweeter codec. The Linux driver does not program the CS42L83 hardware EQ registers (`EQ1S1R7`/`EQ1S2R7`), so those corrections are applied in software.
+
+| f0 (Hz) | Q    | Gain (dB) | Note                        |
+|---------|------|-----------|-----------------------------|
+| 1031    | 0.36 | −17.67    | Tweeter cone resonance cut  |
+| 1890    | 0.29 | +11.48    | Natural tweeter dip         |
+| 3440    | 0.54 | −7.81     |                             |
+| 1180    | 0.14 | −6.62     |                             |
+| 1637    | 0.27 | +5.16     |                             |
+| 4883    | 0.32 | +3.41     |                             |
+| 9000    | 0.70 | +4.0      | CS42L83 HW EQ compensation (high shelf) |
+
+The last band compensates for the CS42L83 hardware EQ registers that macOS programs but the Linux driver skips — they would add ~+8 dB above 9 kHz if active.
+
+---
+
+### Gain structure
+
+The pre-gain of **−12 dB** is needed because the woofer flow correction peaks at **+11.4 dB** at 501 Hz. Without headroom, a 0 dBFS input would clip the DSP at that frequency.
+
+The tweeter path only needs −6 dB headroom (its max boost is +4.5 dB at 15 kHz). To avoid making the tweeter 6 dB quieter than intended, a **+6 dB compensation node** (`tgL`/`tgR`, implemented as a high shelf at 30 Hz) sits at the start of each tweeter path:
+
+```
+pgL (−12 dB) ──┬──> woofer LPF → flow PEQ    (net headroom: −12 + 11.4 = −0.6 dBFS max)
+               └──> tgL (+6 dB) → tweeter PEQ (net headroom: −12 + 6 + 4.5 = −1.5 dBFS max)
+```
+
+---
 
 ### Why no Dolby EQ?
 
-The Dolby DAX3 XML file from BootCamp contains a 20-band EQ, but that is only one stage of a full Dolby pipeline (dynamics, DRC, virtualiser, volume leveller). Applying the EQ alone without the rest produces wrong tonal balance. The CONF_0911 hardware correction filters are sufficient for accurate reproduction.
+The Dolby DAX3 XML from BootCamp contains a 20-band EQ, but it is one stage of a full Dolby pipeline (DRC, dynamics, virtualiser, volume leveller). Applying the EQ alone without the rest of the pipeline produces wrong tonal balance — primarily excessive brightness. The flow-derived woofer EQ + CONF_0911 tweeter EQ is the correct approach for flat, accurate reproduction.
 
-### Why -6 dB pre-gain?
+---
 
-The tweeter PEQ has a +11.48 dB boost at 1890 Hz (compensating a natural dip in the tweeter response). Without headroom, a near-0 dBFS signal at that frequency would clip the DAC output. The -6 dB pre-gain ensures clean reproduction at all volumes.
+## Version history
+
+| Version | Change |
+|---------|--------|
+| v1.0 | Basic crossover only (LPF/HPF at 800 Hz) |
+| v1.1 | Tweeter: CONF_0911 ch1 PEQ + CS42L83 HW EQ compensation shelf |
+| v1.2 | Woofer: CONF_0911 ch0 + rough +7 dB bass shelf from AID20 PR[0] coefficient |
+| v1.3 | Woofer: full biquad fit to AID20 PressureResponse DTFT inverse (Apple flow correction); tweeter gain compensation node added |

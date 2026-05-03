@@ -3,11 +3,10 @@
 
 Signal chain:
   Input stereo (L, R)
-  -> Pre-gain -6 dB (headroom for PEQ boosts)
+  -> Pre-gain -12 dB (headroom; woofer flow path peaks at +11.4 dB)
   -> Fan-out: woofer path + tweeter path (PipeWire handles fan-out natively)
-     Woofer  L/R: 2x LPF @800 Hz (4th-order)
-               -> bass shelf +7 dB @150 Hz (Apple 'flow' AU bass extension approx.)
-               -> CONF_0911 ch0 PEQ (6 bands, resonance correction 200-2500 Hz)
+     Woofer  L/R: 2x LPF @800 Hz (4th-order Linkwitz-Riley)
+               -> AID20 'flow' PEQ (5 peaking + 1 lowshelf, fit to PR0 inverse)
      Tweeter L/R: CONF_0911 ch1 PEQ (7 bands incl. CS42L83 HW EQ compensation)
   -> Output 4ch surround-40
        FL = tweeter_L,  FR = tweeter_R,  RL = woofer_L,  RR = woofer_R
@@ -15,41 +14,36 @@ Signal chain:
 CONF_0911 from cs4208_38.inf, subsystem HDAUDIO VEN_1013&DEV_8409&SUBSYS_106B1000
 (Cirrus CS8409+CS42L83, iMac A2115 2019).  AID20 = iMac A2115 in Apple's tuning DB.
 
-Bass shelf derivation: Apple 'aufx-flow' AU reads PressureResponse (Wold decomp.)
-from AID20 tuning file. First coefficient = 0.447 implies ~+7 dB bass correction
-at DC relative to midrange. Approximated as bq_lowshelf at 150 Hz.
+Woofer PEQ (v1.3): biquad fit to inverse of AID20 PressureResponse (1024-tap FIR,
+48 kHz). DTFT gives measured woofer response; inverse = Apple 'flow' correction.
+Key corrections: +12 dB at 500 Hz, +5 dB at 720 Hz, -8 dB valley at 1 kHz,
++9 dB at 1900 Hz, -5 dB at 2800 Hz. Fit within ±2 dB at 200-800 Hz.
+CONF_0911 ch0 removed (those resonance bands are inappropriate with flow EQ).
 
 Dolby DAX3 EQ is intentionally omitted: it is one part of a multi-stage
 perceptual pipeline (DRC, dynamics, virtualiser); applying the 20-band section
-alone produces wrong tonal balance. CONF_0911 + bass shelf is the correct approach.
+alone produces wrong tonal balance.
 """
 
 # ---------------------------------------------------------------------------
-# CONF_0911 parameters
+# DSP parameters
 # ---------------------------------------------------------------------------
 
-# ch0 = woofer, ch1 = tweeter
 XOVER_HZ = 800.0
 XOVER_Q  = 0.70   # Butterworth 2nd-order (two cascaded = 4th-order Linkwitz-Riley)
 
-# Tweeter software HPF:
-#   800  = same as woofer LPF (crossover pair) — use if driver does NOT init HW EQ
-#   None = no software HPF (use if HW EQ1S1R7/EQ1S2R7 are programmed, or for testing)
-#   200  = subsonic-only protection (compromise test)
-# No software HPF on tweeter — matches Windows APO (HW CS42L83 does DC blocking only)
-TWEETER_HPF_HZ = None
+TWEETER_HPF_HZ = None   # no software HPF; HW CS42L83 provides DC blocking
 
 WOOFER_PEQ = [
-    # Bass extension: approx. Apple 'aufx-flow' correction below 200 Hz.
-    # AID20 PressureResponse[0]=0.447 → ~+7 dB shelf relative to midrange.
-    {"type": "lowshelf", "f0": 150.0, "Q": 0.7, "gain": 7.0},
-    # CONF_0911 ch0 resonance corrections 200-2500 Hz:
-    {"f0": 1320.0, "Q": 0.62, "gain": 17.22},
-    {"f0":  210.0, "Q": 0.84, "gain": -14.42},
-    {"f0": 1663.0, "Q": 0.23, "gain": 10.52},
-    {"f0": 2500.0, "Q": 0.29, "gain": -19.71},
-    {"f0":  604.0, "Q": 0.33, "gain": -7.63},
-    {"f0":  345.0, "Q": 0.46, "gain": -9.00},
+    # AID20 'flow' correction: biquad fit to inverse of PressureResponse[ch0].
+    # Target: DTFT of 1024-tap FIR, inverted, normalized to 0 dB at 1 kHz.
+    # Fit within ±2 dB at 200-800 Hz (woofer operating range with LPF at 800 Hz).
+    {"f0":  500.0, "Q": 1.50, "gain": +12.0},   # main peak (+14 dB target at 500 Hz)
+    {"f0":  720.0, "Q": 2.50, "gain":  +5.0},   # 700-800 Hz shoulder
+    {"f0": 1050.0, "Q": 2.50, "gain":  -8.0},   # valley at 1 kHz
+    {"f0": 1900.0, "Q": 1.00, "gain":  +9.0},   # 2 kHz bump
+    {"f0": 2800.0, "Q": 0.50, "gain":  -5.0},   # 2.5-3 kHz cut
+    {"type": "lowshelf", "f0": 150.0, "Q": 0.70, "gain": +2.0},
 ]
 TWEETER_PEQ = [
     {"f0": 1031.0, "Q": 0.36, "gain": -17.67},
@@ -63,9 +57,9 @@ TWEETER_PEQ = [
     {"type": "highshelf", "f0": 9000.0, "Q": 0.7, "gain": 4.0},
 ]
 
-# Pre-gain: largest single PEQ boost in tweeter path is +11.48 dB.
-# Apply -6 dB headroom so a 0-dBFS signal stays below clipping after boost.
-PRE_GAIN_DB = -6.0
+# Pre-gain: woofer flow path peaks at +11.4 dB at 501 Hz.
+# -12 dB ensures 0-dBFS input cannot clip after maximum PEQ boost.
+PRE_GAIN_DB = -12.0
 
 # ---------------------------------------------------------------------------
 # Build node / link lists
@@ -98,7 +92,7 @@ def chain(node_list):
 node("pgL", "bq_highshelf", Freq=30.0, Q=0.7, Gain=PRE_GAIN_DB)
 node("pgR", "bq_highshelf", Freq=30.0, Q=0.7, Gain=PRE_GAIN_DB)
 
-# --- Woofer Left: 2x LPF + bass shelf + 6 PEQ ---
+# --- Woofer Left: 2x LPF + flow PEQ ---
 wL = ["pgL"]
 for i in range(2):
     n = f"wL_lp{i+1}"
@@ -126,11 +120,12 @@ for i, p in enumerate(WOOFER_PEQ):
     wR.append(n)
 chain(wR)
 
-# --- Tweeter Left: [optional HPF] + 6 PEQ ---
-# Windows APO has NO software HPF for tweeter (hardware CS42L83 EQ1S1R7/EQ1S2R7 does it).
-# Linux driver does NOT program those hardware regs, so we add software HPF.
-# Set TWEETER_HPF_HZ = None to test without HPF (matches Windows APO exactly).
-tL = []
+# --- Tweeter Left: +6 dB compensation + [optional HPF] + PEQ ---
+# Pre-gain is -12 dB (needed for woofer's +11.4 dB flow boost).
+# Tweeter path needs only -6 dB headroom, so compensate +6 dB here.
+node("tgL", "bq_highshelf", Freq=30.0, Q=0.7, Gain=6.0)
+link("pgL", "tgL")
+tL = ["tgL"]
 if TWEETER_HPF_HZ:
     for i in range(2):
         n = f"tL_hp{i+1}"
@@ -141,11 +136,12 @@ for i, p in enumerate(TWEETER_PEQ):
     label = "bq_highshelf" if p.get("type") == "highshelf" else "bq_peaking"
     node(n, label, Freq=p["f0"], Q=p["Q"], Gain=p["gain"])
     tL.append(n)
-link("pgL", tL[0])
 chain(tL)
 
 # --- Tweeter Right: same ---
-tR = []
+node("tgR", "bq_highshelf", Freq=30.0, Q=0.7, Gain=6.0)
+link("pgR", "tgR")
+tR = ["tgR"]
 if TWEETER_HPF_HZ:
     for i in range(2):
         n = f"tR_hp{i+1}"
@@ -156,7 +152,6 @@ for i, p in enumerate(TWEETER_PEQ):
     label = "bq_highshelf" if p.get("type") == "highshelf" else "bq_peaking"
     node(n, label, Freq=p["f0"], Q=p["Q"], Gain=p["gain"])
     tR.append(n)
-link("pgR", tR[0])
 chain(tR)
 
 # ---------------------------------------------------------------------------
